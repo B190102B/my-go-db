@@ -1,4 +1,4 @@
-module main
+module github.com/B190102B/db
 
 go 1.20
 
