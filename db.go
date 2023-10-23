@@ -13,70 +13,81 @@ import (
 )
 
 var (
-	readDB  *sql.DB
-	writeDB *sql.DB
 	logging bool
 )
 
 func One[T comparable](query string, args []interface{}) *T {
-	st := time.Now()
-	rows, err := GetDB().Query(query, args...)
-	handleError("Error On Get Rows", err)
-
 	if logging {
+		st := time.Now()
 		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
 	}
 
-	var res []map[string]interface{}
+	db := GetDB()
+	defer db.Close()
+
+	rows, err := db.Query(query, args...)
+	handleError("Error On Get Rows", err)
+
 	if rows.Next() {
 		m := resultToMap(rows)
-		res = append(res, m)
-		structList := mapToStruct[T](res)
-		return &structList[0]
+		structData := mapToStruct[T](m)
+		return &structData
 	} else {
 		return nil
 	}
 }
 
 func All[T comparable](query string, args []interface{}) []T {
-	st := time.Now()
-	rows, err := GetDB().Query(query, args...)
-	handleError("Error On Get Rows", err)
-
 	if logging {
+		st := time.Now()
 		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
 	}
 
-	var res []map[string]interface{}
+	db := GetDB()
+	defer db.Close()
+
+	rows, err := db.Query(query, args...)
+	handleError("Error On Get Rows", err)
+
+	var res []T
 	for rows.Next() {
 		m := resultToMap(rows)
-		res = append(res, m)
+		structData := mapToStruct[T](m)
+		res = append(res, structData)
 	}
-	structList := mapToStruct[T](res)
 
-	return structList
+	return res
+}
+
+func Count(query string, args []interface{}) int {
+	return 0
 }
 
 func GetRows(query string, args []interface{}) *sql.Rows {
-	st := time.Now()
-	rows, err := GetDB().Query(query, args...)
-	handleError("Error On Get Rows", err)
-
 	if logging {
+		st := time.Now()
 		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
 	}
+
+	db := GetDB()
+	defer db.Close()
+
+	rows, err := db.Query(query, args...)
+	handleError("Error On Get Rows", err)
 
 	return rows
 }
 
 func Exec(query string, args []interface{}) sql.Result {
-	st := time.Now()
-
 	if logging {
+		st := time.Now()
 		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
 	}
 
-	res, err := GetDB().Exec(query, args...)
+	db := GetDB()
+	defer db.Close()
+
+	res, err := db.Exec(query, args...)
 	handleError("Error On Executes Query", err)
 
 	return res
@@ -86,19 +97,13 @@ func SetLogging(isLogging bool) {
 	logging = isLogging
 }
 
+func GetIsLogging() bool {
+	return logging
+}
+
 func GetDB(readOnly ...bool) *sql.DB {
 	if len(readOnly) == 0 {
 		readOnly = append(readOnly, true)
-	}
-
-	if readOnly[0] {
-		if readDB != nil {
-			return readDB
-		}
-	} else {
-		if writeDB != nil {
-			return writeDB
-		}
 	}
 
 	dbConfig := &mysql.Config{
@@ -107,6 +112,7 @@ func GetDB(readOnly ...bool) *sql.DB {
 		ParseTime:            true,
 		AllowNativePasswords: true,
 	}
+
 	if readOnly[0] {
 		dbConfig.User = getEnv("DATABASE_READ_USERNAME")
 		dbConfig.Passwd = getEnv("DATABASE_READ_PASSWORD")
@@ -159,15 +165,9 @@ func resultToMap(list *sql.Rows) map[string]interface{} {
 	return row
 }
 
-func mapToStruct[T comparable](mapList []map[string]interface{}) (structList []T) {
-	for _, mapData := range mapList {
-		jsonData, _ := json.Marshal(mapData)
-
-		var structData T
-		json.Unmarshal(jsonData, &structData)
-
-		structList = append(structList, structData)
-	}
+func mapToStruct[T comparable](mapData map[string]interface{}) (structData T) {
+	jsonData, _ := json.Marshal(mapData)
+	json.Unmarshal(jsonData, &structData)
 	return
 }
 
