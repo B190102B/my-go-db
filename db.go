@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -156,11 +157,12 @@ func resultToMap(list *sql.Rows) map[string]interface{} {
 	}
 	list.Scan(scans...)
 	for i, v := range scans {
-		var value = ""
 		if v != nil {
-			value = fmt.Sprintf("%s", v)
+			if reflect.TypeOf(v).String() == "[]uint8" {
+				v = fmt.Sprintf("%s", v)
+			}
+			row[fields[i]] = v
 		}
-		row[fields[i]] = value
 	}
 	return row
 }
