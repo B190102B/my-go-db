@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"reflect"
 	"strings"
@@ -18,20 +17,17 @@ var (
 )
 
 func One[T comparable](query string, args []interface{}) *T {
-	if logging {
-		st := time.Now()
-		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
-	}
+	defer timer(queryToString(query, args))()
 
 	db := GetDB()
 	defer db.Close()
 
 	rows, err := db.Query(query, args...)
+	defer rows.Close()
 	handleError("Error On Get Rows", err)
 
 	if rows.Next() {
-		m := resultToMap(rows)
-		structData := mapToStruct[T](m)
+		structData := resultToStruct[T](rows)
 		return &structData
 	} else {
 		return nil
@@ -39,21 +35,18 @@ func One[T comparable](query string, args []interface{}) *T {
 }
 
 func All[T comparable](query string, args []interface{}) []T {
-	if logging {
-		st := time.Now()
-		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
-	}
+	defer timer(queryToString(query, args))()
 
 	db := GetDB()
 	defer db.Close()
 
 	rows, err := db.Query(query, args...)
+	defer rows.Close()
 	handleError("Error On Get Rows", err)
 
 	var res []T
 	for rows.Next() {
-		m := resultToMap(rows)
-		structData := mapToStruct[T](m)
+		structData := resultToStruct[T](rows)
 		res = append(res, structData)
 	}
 
@@ -65,10 +58,7 @@ func Count(query string, args []interface{}) int {
 }
 
 func GetRows(query string, args []interface{}) *sql.Rows {
-	if logging {
-		st := time.Now()
-		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
-	}
+	defer timer(queryToString(query, args))()
 
 	db := GetDB()
 	defer db.Close()
@@ -80,12 +70,9 @@ func GetRows(query string, args []interface{}) *sql.Rows {
 }
 
 func Exec(query string, args []interface{}) sql.Result {
-	if logging {
-		st := time.Now()
-		defer log.Println(fmt.Sprintf("[%v] %s", time.Since(st), queryToString(query, args)))
-	}
+	defer timer(queryToString(query, args))()
 
-	db := GetDB()
+	db := GetDB(false)
 	defer db.Close()
 
 	res, err := db.Exec(query, args...)
@@ -147,7 +134,7 @@ func queryToString(query string, args []interface{}) string {
 	return queryToString(query, args[1:])
 }
 
-func resultToMap(list *sql.Rows) map[string]interface{} {
+func resultToStruct[T comparable](list *sql.Rows) (structData T) {
 	fields, _ := list.Columns()
 	scans := make([]interface{}, len(fields))
 	row := make(map[string]interface{})
@@ -164,11 +151,8 @@ func resultToMap(list *sql.Rows) map[string]interface{} {
 			row[fields[i]] = v
 		}
 	}
-	return row
-}
 
-func mapToStruct[T comparable](mapData map[string]interface{}) (structData T) {
-	jsonData, _ := json.Marshal(mapData)
+	jsonData, _ := json.Marshal(row)
 	json.Unmarshal(jsonData, &structData)
 	return
 }
@@ -183,4 +167,12 @@ func handleError(info string, err error) {
 		msg := fmt.Sprintf("%s: %s", info, err.Error())
 		panic(msg)
 	}
+}
+
+func timer(query string) func() {
+	if logging {
+		st := time.Now()
+		return func() { fmt.Printf("[%s] %s \n", time.Since(st), query) }
+	}
+	return func() {}
 }
