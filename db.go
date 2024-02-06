@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -30,7 +29,8 @@ func One[T comparable](query string, args []interface{}) *T {
 	handleError("Error On Get Rows", err)
 
 	if rows.Next() {
-		structData := resultToStruct[T](rows)
+		var structData T
+		mapToStruct(resultToMap(rows), &structData)
 		return &structData
 	} else {
 		return nil
@@ -49,8 +49,40 @@ func All[T comparable](query string, args []interface{}) []T {
 
 	var res []T
 	for rows.Next() {
-		structData := resultToStruct[T](rows)
+		var structData T
+		mapToStruct(resultToMap(rows), &structData)
 		res = append(res, structData)
+	}
+
+	return res
+}
+
+// Executes the query and returns the first column of the result
+func Column(query string, args []interface{}, dest ...any) error {
+	defer timer(queryToString(query, args))()
+
+	db := GetDB()
+	defer db.Close()
+
+	row := db.QueryRow(query, args...)
+	err := row.Scan(dest...)
+	return err
+}
+
+// Executes the SQL statement and returns ALL rows at once
+func QueryAll(query string, args []interface{}) []map[string]interface{} {
+	defer timer(queryToString(query, args))()
+
+	db := GetDB()
+	defer db.Close()
+
+	rows, err := db.Query(query, args...)
+	defer rows.Close()
+	handleError("Error On Get Rows", err)
+
+	var res []map[string]interface{}
+	for rows.Next() {
+		res = append(res, resultToMap(rows))
 	}
 
 	return res
@@ -144,53 +176,71 @@ func queryToString(query string, args []interface{}) string {
 	return queryToString(query, args[1:])
 }
 
-func resultToStruct[T comparable](list *sql.Rows) (structData T) {
-	fields, _ := list.Columns()
-	scans := make([]interface{}, len(fields))
-	row := make(map[string]interface{})
+func resultToMap(list *sql.Rows) map[string]interface{} {
+	fields, _ := list.Columns()               // fieldName
+	scans := make([]interface{}, len(fields)) // value
+	row := make(map[string]interface{})       // result
 
 	for i := range scans {
 		scans[i] = &scans[i]
 	}
 	list.Scan(scans...)
-	typeMap := getStructTypeMap(structData)
 	for i, v := range scans {
 		if v != nil {
-			row[fields[i]] = typeConvertor(v, typeMap[fields[i]])
+			row[fields[i]] = v
 		}
 	}
 
-	jsonData, _ := json.Marshal(row)
-	json.Unmarshal(jsonData, &structData)
-	return
+	return row
 }
 
-func getStructTypeMap(s interface{}) map[string]reflect.Type {
-	m := make(map[string]reflect.Type)
+func mapToStruct(data map[string]interface{}, target interface{}) {
+	rt := reflect.TypeOf(target).Elem()
+	rv := reflect.ValueOf(target).Elem()
 
-	value := reflect.ValueOf(s)
-	if value.Kind() == reflect.Ptr {
-		value = value.Elem()
-	}
+	for i := 0; i < rt.NumField(); i++ {
+		fieldName := rt.Field(i).Name
+		fieldType := rt.Field(i).Type
+		createdAtField, _ := rt.FieldByName(fieldName)
+		jsonTag := createdAtField.Tag.Get("json")
 
-	if value.Kind() == reflect.Struct {
-		typ := value.Type()
+		if jsonTag != "" {
+			fieldName = jsonTag
+		} else {
+			fieldName = strings.ToLower(fieldName)
+		}
 
-		for i := 0; i < value.NumField(); i++ {
-			fieldName := typ.Field(i).Name
-			fieldType := typ.Field(i).Type
-			createdAtField, _ := typ.FieldByName(fieldName)
-			jsonTag := createdAtField.Tag.Get("json")
+		if value, ok := data[fieldName]; ok {
+			value = typeConvertor(value, fieldType)
 
-			if jsonTag != "" {
-				m[jsonTag] = fieldType
+			if fieldType.Kind() == reflect.Ptr && value != nil {
+				switch fieldType.Elem().Kind() {
+				case reflect.Bool:
+					tmp := false
+					rv.Field(i).Set(reflect.ValueOf(&tmp))
+					rv.Field(i).Elem().Set(reflect.ValueOf(value))
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					tmp := 0
+					rv.Field(i).Set(reflect.ValueOf(&tmp))
+					rv.Field(i).Elem().Set(reflect.ValueOf(value))
+				case reflect.Float32, reflect.Float64:
+					tmp := 0.0
+					rv.Field(i).Set(reflect.ValueOf(&tmp))
+					rv.Field(i).Elem().Set(reflect.ValueOf(value))
+				case reflect.String:
+					tmp := ""
+					rv.Field(i).Set(reflect.ValueOf(&tmp))
+					rv.Field(i).Elem().Set(reflect.ValueOf(value))
+				case reflect.Map:
+					tmp := map[string]interface{}{}
+					rv.Field(i).Set(reflect.ValueOf(&tmp))
+					rv.Field(i).Elem().Set(reflect.ValueOf(value))
+				}
 			} else {
-				m[strings.ToLower(fieldName)] = fieldType
+				rv.Field(i).Set(reflect.ValueOf(value))
 			}
 		}
 	}
-
-	return m
 }
 
 func typeConvertor(value interface{}, targetType reflect.Type) interface{} {
