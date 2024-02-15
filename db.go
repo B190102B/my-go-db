@@ -29,8 +29,9 @@ func One[T comparable](query string, args []interface{}) *T {
 	handleError("Error On Get Rows", err)
 
 	if rows.Next() {
-		var structData T
-		mapToStruct(resultToMap(rows), &structData)
+		// var structData T
+		// mapToStruct(resultToMap(rows), &structData)
+		structData := ScanStruct[T](rows)
 		return &structData
 	} else {
 		return nil
@@ -49,9 +50,9 @@ func All[T comparable](query string, args []interface{}) []T {
 
 	var res []T
 	for rows.Next() {
-		var structData T
-		mapToStruct(resultToMap(rows), &structData)
-		res = append(res, structData)
+		// var structData T
+		// mapToStruct(resultToMap(rows), &structData)
+		res = append(res, ScanStruct[T](rows))
 	}
 
 	return res
@@ -279,6 +280,40 @@ func typeConvertor(value interface{}, targetType reflect.Type) interface{} {
 	return value
 }
 
+func ScanStruct[T comparable](row *sql.Rows) (structData T) {
+	fields, _ := row.Columns()                // fieldName
+	scans := make([]interface{}, len(fields)) // value
+
+	for i := range scans {
+		scans[i] = &scans[i]
+	}
+
+	rt := reflect.TypeOf(structData)
+	rv := reflect.ValueOf(&structData).Elem()
+	for i := 0; i < rt.NumField(); i++ {
+		fieldName := rt.Field(i).Name
+		createdAtField, _ := rt.FieldByName(fieldName)
+		jsonTag := createdAtField.Tag.Get("json")
+
+		if jsonTag != "" {
+			fieldName = jsonTag
+		} else {
+			fieldName = strings.ToLower(fieldName)
+		}
+
+		idx := IndexOf(fieldName, fields)
+
+		if idx < 0 {
+			continue
+		}
+
+		scans[idx] = rv.Field(i).Addr().Interface()
+	}
+
+	row.Scan(scans...)
+	return structData
+}
+
 func getEnv(k string) string {
 	v := os.Getenv(k)
 	return v
@@ -297,4 +332,13 @@ func timer(query string) func() {
 		return func() { log.Printf("[%.2fms] %s \n", float64(time.Since(st).Milliseconds()), query) }
 	}
 	return func() {}
+}
+
+func IndexOf(item string, array []string) int {
+	for i, element := range array {
+		if element == item {
+			return i
+		}
+	}
+	return -1
 }
