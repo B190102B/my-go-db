@@ -18,15 +18,15 @@ var (
 )
 
 // Pls enhance the query by incorporating the 'limit 1' parameter to optimize speed.
-func One[T comparable](query string, args []interface{}) *T {
+func One[T any](query string, args []interface{}) *T {
 	defer timer(queryToString(query, args))()
 
 	db := GetDB()
 	defer db.Close()
 
 	rows, err := db.Query(query, args...)
-	defer rows.Close()
 	handleError("Error On Get Rows", err)
+	defer rows.Close()
 
 	if rows.Next() {
 		// var structData T
@@ -38,15 +38,15 @@ func One[T comparable](query string, args []interface{}) *T {
 	}
 }
 
-func All[T comparable](query string, args []interface{}) []T {
+func All[T any](query string, args []interface{}) []T {
 	defer timer(queryToString(query, args))()
 
 	db := GetDB()
 	defer db.Close()
 
 	rows, err := db.Query(query, args...)
-	defer rows.Close()
 	handleError("Error On Get Rows", err)
+	defer rows.Close()
 
 	var res []T
 	for rows.Next() {
@@ -78,8 +78,8 @@ func QueryAll(query string, args []interface{}) []map[string]interface{} {
 	defer db.Close()
 
 	rows, err := db.Query(query, args...)
-	defer rows.Close()
 	handleError("Error On Get Rows", err)
+	defer rows.Close()
 
 	var res []map[string]interface{}
 	for rows.Next() {
@@ -124,7 +124,8 @@ func GetIsLogging() bool {
 }
 
 // The responsibility to close the database connection must be handled externally when calling this method.
-// This function will not automatically close the rows and database connection after the query is executed.
+//
+// This function WILL NOT automatically close the rows and database connection after the query is executed.
 func GetDB(readOnly ...bool) *sql.DB {
 	if len(readOnly) == 0 {
 		readOnly = append(readOnly, true)
@@ -280,7 +281,7 @@ func typeConvertor(value interface{}, targetType reflect.Type) interface{} {
 	return value
 }
 
-func ScanStruct[T comparable](row *sql.Rows) (structData T) {
+func ScanStruct[T any](row *sql.Rows) (structData T) {
 	fields, _ := row.Columns()                // fieldName
 	scans := make([]interface{}, len(fields)) // value
 
