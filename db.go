@@ -103,16 +103,13 @@ func GetRows(query string, args []interface{}) *sql.Rows {
 	return rows
 }
 
-func Exec(query string, args []interface{}) sql.Result {
+func Exec(query string, args []interface{}) (sql.Result, error) {
 	defer timer(queryToString(query, args))()
 
 	db := GetDB(false)
 	defer db.Close()
 
-	res, err := db.Exec(query, args...)
-	handleError("Error On Executes Query", err)
-
-	return res
+	return db.Exec(query, args...)
 }
 
 func SetLogging(isLogging bool) {
