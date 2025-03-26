@@ -410,11 +410,10 @@ func setFieldFromInterface(fv reflect.Value, val interface{}) error {
 
 	// Handle string specifically
 	if fv.Type() == reflect.TypeOf("") {
-		t, ok := val.(string)
-		if !ok {
-			t = fmt.Sprint(val)
+		if _, ok := val.([]byte); !ok {
+			val = fmt.Sprint(val)
 		}
-		fv.Set(reflect.ValueOf(t))
+		fv.Set(reflect.ValueOf(val).Convert(fv.Type()))
 		return nil
 	}
 
