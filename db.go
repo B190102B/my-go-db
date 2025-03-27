@@ -409,12 +409,32 @@ func setFieldFromInterface(fv reflect.Value, val interface{}) error {
 	}
 
 	// Handle string specifically
-	if fv.Type() == reflect.TypeOf("") {
+	if fv.Type().Kind() == reflect.String {
 		if _, ok := val.([]byte); !ok {
 			val = fmt.Sprint(val)
 		}
 		fv.Set(reflect.ValueOf(val).Convert(fv.Type()))
 		return nil
+	}
+
+	// Handle boolean types specifically
+	if fv.Type().Kind() == reflect.Bool {
+		switch v := val.(type) {
+		case bool:
+			fv.SetBool(v)
+			return nil
+		case int64:
+			fv.SetBool(v != 0)
+			return nil
+		case int:
+			fv.SetBool(v != 0)
+			return nil
+		case []byte:
+			if len(v) == 1 {
+				fv.SetBool(v[0] == '1')
+				return nil
+			}
+		}
 	}
 
 	// Handle other types
