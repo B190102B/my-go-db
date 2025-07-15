@@ -1,13 +1,16 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"os"
 	"reflect"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/cloudsqlconn"
 	"github.com/go-sql-driver/mysql"
 	"github.com/iancoleman/strcase"
 	"github.com/spf13/cast"
@@ -15,6 +18,8 @@ import (
 
 var (
 	logging bool
+	db      *sql.DB
+	wdb     *sql.DB
 )
 
 // Pls enhance the query by incorporating the 'limit 1' parameter to optimize speed.
@@ -22,8 +27,6 @@ func One[T any](query string, args []interface{}) *T {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	rows, err := db.Query(query, args...)
 	handleError("Error On Get Rows", err)
 	defer rows.Close()
@@ -42,8 +45,6 @@ func All[T any](query string, args []interface{}) []T {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	rows, err := db.Query(query, args...)
 	handleError("Error On Get Rows", err)
 	defer rows.Close()
@@ -63,8 +64,6 @@ func Column(query string, args []interface{}, dest ...any) error {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	row := db.QueryRow(query, args...)
 	err := row.Scan(dest...)
 	return err
@@ -75,8 +74,6 @@ func ColumnSlice[T any](query string, args []interface{}) ([]T, error) {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("error on query execution: %w", err)
@@ -104,8 +101,6 @@ func QueryAll(query string, args []interface{}) []map[string]interface{} {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	rows, err := db.Query(query, args...)
 	handleError("Error On Get Rows", err)
 	defer rows.Close()
@@ -124,8 +119,6 @@ func GetRows(query string, args []interface{}) *sql.Rows {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
-	defer db.Close()
-
 	rows, err := db.Query(query, args...)
 	handleError("Error On Get Rows", err)
 
@@ -136,8 +129,6 @@ func Exec(query string, args []interface{}) (sql.Result, error) {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB(false)
-	defer db.Close()
-
 	return db.Exec(query, args...)
 }
 
@@ -149,14 +140,38 @@ func GetIsLogging() bool {
 	return logging
 }
 
-// The responsibility to close the database connection must be handled externally when calling this method.
+// GetDB returns a shared connection pool (*sql.DB) for either read-only or read-write access.
 //
-// This function WILL NOT automatically close the rows and database connection after the query is executed.
+//   - If `readOnly` is true or not specified, it returns the read-only database connection.
+//   - If `readOnly` is false, it returns the write-enabled database connection.
+//
+// Connection pools are initialized once and reused for the lifetime of the Cloud Function instance.
+// This improves performance by avoiding repeated connection creation.
+//
+// ⚠️ Note:
+//   - Connections are NOT closed automatically — they remain open and reused across invocations.
+//   - You can explicitly close the pooled connections by calling `CloseDB()` (e.g., in tests or graceful shutdowns).
+//
+// 🔄 GCP recommends globally scoped connection pools to maximize connection reuse
+// and allow cleanup when the instance is evicted (auto-scaled down).
 func GetDB(readOnly ...bool) *sql.DB {
-	if len(readOnly) == 0 {
-		readOnly = append(readOnly, true)
+	// Use write DB connection if explicitly requested
+	if len(readOnly) > 0 && !readOnly[0] {
+		if wdb == nil {
+			wdb = initDB(false)
+		}
+
+		return wdb
 	}
 
+	// Default to read-only DB connection
+	if db == nil {
+		db = initDB(true)
+	}
+	return db
+}
+
+func initDB(readOnly bool) *sql.DB {
 	dbConfig := &mysql.Config{
 		DBName:               getEnv("DATABASE_NAME"),
 		Net:                  getEnv("DATABASE_MODE"),
@@ -164,29 +179,92 @@ func GetDB(readOnly ...bool) *sql.DB {
 		AllowNativePasswords: true,
 	}
 
-	if readOnly[0] {
+	if readOnly {
 		dbConfig.User = getEnv("DATABASE_READ_USERNAME")
 		dbConfig.Passwd = getEnv("DATABASE_READ_PASSWORD")
-		dbConfig.Addr = getEnv("DATABASE_READ_HOST")
+		dbConfig.Addr = getEnv("DATABASE_READ_HOST") // Use unix socket
+
+		// Use Cloud SQL Connector if configured
+		if cloudSqlInstances := getEnv("DATABASE_READ_INSTANCES"); cloudSqlInstances != "" {
+			if err := registerDial(cloudSqlInstances); err != nil {
+				handleError("cloudsqlconn.NewDialer", err)
+			}
+
+			dbConfig.Net = "cloudsqlconn"
+			dbConfig.Addr = "localhost:3306"
+		}
 	}
 
 	if dbConfig.User == "" || dbConfig.Passwd == "" || dbConfig.Addr == "" {
 		dbConfig.User = getEnv("DATABASE_USERNAME")
 		dbConfig.Passwd = getEnv("DATABASE_PASSWORD")
-		dbConfig.Addr = getEnv("DATABASE_HOST")
+		dbConfig.Addr = getEnv("DATABASE_HOST") // Use unix socket
+
+		// Use Cloud SQL Connector if configured
+		if cloudSqlInstances := getEnv("DATABASE_INSTANCES"); cloudSqlInstances != "" {
+			if err := registerDial(cloudSqlInstances); err != nil {
+				handleError("cloudsqlconn.NewDialer", err)
+			}
+
+			dbConfig.Net = "cloudsqlconn"
+			dbConfig.Addr = "localhost:3306"
+		}
 	}
 
 	db, err := sql.Open("mysql", dbConfig.FormatDSN())
-	if err != nil {
-		handleError("Error Open Connection DB", err)
-	}
+	handleError("Error Open Connection DB", err)
 
 	// Check the connectivity by pinging the database
 	if err := db.Ping(); err != nil {
 		handleError("Error connecting to the database", err)
 	}
 
+	// Optimize for Cloud Functions: single, short-lived connection
+	db.SetConnMaxLifetime(5 * time.Second)
+	db.SetConnMaxIdleTime(1 * time.Second)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	return db
+}
+
+func registerDial(cloudSqlInstances string) error {
+	dialer, err := cloudsqlconn.NewDialer(context.Background())
+	if err != nil {
+		return err
+	}
+
+	mysql.RegisterDialContext("cloudsqlconn", func(ctx context.Context, addr string) (net.Conn, error) {
+		return dialer.Dial(ctx, cloudSqlInstances)
+	})
+
+	return nil
+}
+
+// CloseDB explicitly closes the read and write *sql.DB connection pools if they exist.
+//
+// This is typically unnecessary in Google Cloud Functions, as connections are automatically
+// cleaned up when the instance is shut down. However, this function can be useful for:
+//
+//   - Unit tests
+//   - Graceful shutdown in long-lived services
+//   - Manual cleanup between runs (e.g., CLI tools or dev scripts)
+func CloseDB() error {
+	if db != nil {
+		if err := db.Close(); err != nil {
+			return err
+		}
+		db = nil
+	}
+
+	if wdb != nil {
+		if err := wdb.Close(); err != nil {
+			return err
+		}
+		wdb = nil
+	}
+
+	return nil
 }
 
 func GenerateQueryString(query string, args []interface{}) string {
