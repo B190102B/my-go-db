@@ -23,7 +23,7 @@ var (
 )
 
 // Pls enhance the query by incorporating the 'limit 1' parameter to optimize speed.
-func One[T any](query string, args []interface{}) *T {
+func One[T any](query string, args []any) *T {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -41,7 +41,7 @@ func One[T any](query string, args []interface{}) *T {
 	}
 }
 
-func All[T any](query string, args []interface{}) []T {
+func All[T any](query string, args []any) []T {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -60,7 +60,7 @@ func All[T any](query string, args []interface{}) []T {
 }
 
 // Executes the query and returns the first column of the result
-func Column(query string, args []interface{}, dest ...any) error {
+func Column(query string, args []any, dest ...any) error {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -70,7 +70,7 @@ func Column(query string, args []interface{}, dest ...any) error {
 }
 
 // ColumnSlice executes the query and returns all values from the first column as a slice
-func ColumnSlice[T any](query string, args []interface{}) ([]T, error) {
+func ColumnSlice[T any](query string, args []any) ([]T, error) {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -97,7 +97,7 @@ func ColumnSlice[T any](query string, args []interface{}) ([]T, error) {
 }
 
 // Executes the SQL statement and returns ALL rows at once
-func QueryAll(query string, args []interface{}) []map[string]interface{} {
+func QueryAll(query string, args []any) []map[string]any {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -105,7 +105,7 @@ func QueryAll(query string, args []interface{}) []map[string]interface{} {
 	handleError("Error On Get Rows", err)
 	defer rows.Close()
 
-	var res []map[string]interface{}
+	var res []map[string]any
 	for rows.Next() {
 		res = append(res, resultToMap(rows))
 	}
@@ -115,7 +115,7 @@ func QueryAll(query string, args []interface{}) []map[string]interface{} {
 
 // Deprecated: Unable to close the rows and database connection after the query is completed.
 // This function will retain the database connection in the pool.
-func GetRows(query string, args []interface{}) *sql.Rows {
+func GetRows(query string, args []any) *sql.Rows {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB()
@@ -125,7 +125,7 @@ func GetRows(query string, args []interface{}) *sql.Rows {
 	return rows
 }
 
-func Exec(query string, args []interface{}) (sql.Result, error) {
+func Exec(query string, args []any) (sql.Result, error) {
 	defer timer(GenerateQueryString(query, args))()
 
 	db := GetDB(false)
@@ -267,7 +267,7 @@ func CloseDB() error {
 	return nil
 }
 
-func GenerateQueryString(query string, args []interface{}) string {
+func GenerateQueryString(query string, args []any) string {
 	if len(args) == 0 {
 		return query
 	}
@@ -284,10 +284,10 @@ func GenerateQueryString(query string, args []interface{}) string {
 	return GenerateQueryString(query, args[1:])
 }
 
-func resultToMap(list *sql.Rows) map[string]interface{} {
-	fields, _ := list.Columns()               // fieldName
-	scans := make([]interface{}, len(fields)) // value
-	row := make(map[string]interface{})       // result
+func resultToMap(list *sql.Rows) map[string]any {
+	fields, _ := list.Columns()       // fieldName
+	scans := make([]any, len(fields)) // value
+	row := make(map[string]any)       // result
 
 	for i := range scans {
 		scans[i] = &scans[i]
@@ -302,7 +302,7 @@ func resultToMap(list *sql.Rows) map[string]interface{} {
 	return row
 }
 
-func mapToStruct(data map[string]interface{}, target interface{}) {
+func mapToStruct(data map[string]any, target any) {
 	rt := reflect.TypeOf(target).Elem()
 	rv := reflect.ValueOf(target).Elem()
 
@@ -340,7 +340,7 @@ func mapToStruct(data map[string]interface{}, target interface{}) {
 					rv.Field(i).Set(reflect.ValueOf(&tmp))
 					rv.Field(i).Elem().Set(reflect.ValueOf(value))
 				case reflect.Map:
-					tmp := map[string]interface{}{}
+					tmp := map[string]any{}
 					rv.Field(i).Set(reflect.ValueOf(&tmp))
 					rv.Field(i).Elem().Set(reflect.ValueOf(value))
 				}
@@ -350,7 +350,7 @@ func mapToStruct(data map[string]interface{}, target interface{}) {
 		}
 	}
 }
-func typeConvertor(value interface{}, targetType reflect.Type) interface{} {
+func typeConvertor(value any, targetType reflect.Type) any {
 	if targetType == nil {
 		return value
 	}
@@ -387,11 +387,11 @@ func typeConvertor(value interface{}, targetType reflect.Type) interface{} {
 }
 
 func ScanStruct[T any](row *sql.Rows) (structData T) {
-	fields, _ := row.Columns()                // fieldName
-	scans := make([]interface{}, len(fields)) // value
+	fields, _ := row.Columns()        // fieldName
+	scans := make([]any, len(fields)) // value
 
 	for i := range scans {
-		scans[i] = new(interface{})
+		scans[i] = new(any)
 	}
 
 	rt := reflect.TypeOf(structData)
@@ -442,8 +442,8 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 		}
 
 		if !isNullableType(field.Type) {
-			// Try to set the value from the scanned interface{}
-			scannedVal := *scans[idx].(*interface{})
+			// Try to set the value from the scanned any
+			scannedVal := *scans[idx].(*any)
 			if scannedVal != nil {
 				fv := rv.Field(i)
 				if err := setFieldFromInterface(fv, scannedVal); err != nil {
@@ -472,7 +472,7 @@ func isNullableType(t reflect.Type) bool {
 }
 
 // Helper function to set a field from an interface{} value
-func setFieldFromInterface(fv reflect.Value, val interface{}) error {
+func setFieldFromInterface(fv reflect.Value, val any) error {
 	if !fv.CanSet() {
 		return fmt.Errorf("field cannot be set")
 	}
