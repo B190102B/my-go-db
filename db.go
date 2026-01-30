@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -286,6 +287,11 @@ func resultToMap(list *sql.Rows) map[string]any {
 	return row
 }
 
+type fieldMap struct {
+	structIdx int
+	scanIdx   int
+}
+
 func ScanStruct[T any](row *sql.Rows) (structData T) {
 	fields, _ := row.Columns()        // fieldName
 	scans := make([]any, len(fields)) // value
@@ -296,7 +302,10 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 
 	rt := reflect.TypeOf(structData)
 	rv := reflect.ValueOf(&structData).Elem()
-	for i := 0; i < rt.NumField(); i++ {
+	numFields := rt.NumField()
+
+	notNullFields := make([]fieldMap, 0, rt.NumField())
+	for i := range numFields {
 		field := rt.Field(i)
 		fieldName := field.Name
 
@@ -308,7 +317,7 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 			fieldName = strcase.ToSnake(fieldName)
 		}
 
-		idx := IndexOf(fieldName, fields)
+		idx := slices.Index(fields, fieldName)
 		if idx < 0 {
 			continue
 		}
@@ -316,6 +325,8 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 		// Only set the scan target if the field type can handle nil
 		if isNullableType(field.Type) {
 			scans[idx] = rv.Field(i).Addr().Interface()
+		} else {
+			notNullFields = append(notNullFields, fieldMap{i, idx})
 		}
 	}
 
@@ -326,30 +337,14 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 	}
 
 	// For fields we didn't set (because they might error), try to set them from the scanned interface{}
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-		fieldName := field.Name
-
-		if jsonTag := field.Tag.Get("json"); jsonTag != "" {
-			fieldName = jsonTag
-		} else {
-			fieldName = strcase.ToSnake(fieldName)
-		}
-
-		idx := IndexOf(fieldName, fields)
-		if idx < 0 {
-			continue
-		}
-
-		if !isNullableType(field.Type) {
-			// Try to set the value from the scanned any
-			scannedVal := *scans[idx].(*any)
-			if scannedVal != nil {
-				fv := rv.Field(i)
-				if err := setFieldFromInterface(fv, scannedVal); err != nil {
-					// Skip if we can't set the field
-					continue
-				}
+	for _, m := range notNullFields {
+		// Try to set the value from the scanned any
+		scannedVal := *scans[m.scanIdx].(*any)
+		if scannedVal != nil {
+			fv := rv.Field(m.structIdx)
+			if err := setFieldFromInterface(fv, scannedVal); err != nil {
+				// Skip if we can't set the field
+				continue
 			}
 		}
 	}
