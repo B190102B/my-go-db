@@ -8,18 +8,18 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
 	"github.com/go-sql-driver/mysql"
 	"github.com/iancoleman/strcase"
-	"github.com/spf13/cast"
 )
 
 var (
-	logging bool
-	db      *sql.DB
-	wdb     *sql.DB
+	logging     bool
+	readDBOnce  = sync.OnceValue(func() *sql.DB { return initDB(true) })
+	writeDBOnce = sync.OnceValue(func() *sql.DB { return initDB(false) })
 )
 
 // Pls enhance the query by incorporating the 'limit 1' parameter to optimize speed.
@@ -32,8 +32,6 @@ func One[T any](query string, args []any) *T {
 	defer rows.Close()
 
 	if rows.Next() {
-		// var structData T
-		// mapToStruct(resultToMap(rows), &structData)
 		structData := ScanStruct[T](rows)
 		return &structData
 	} else {
@@ -51,8 +49,6 @@ func All[T any](query string, args []any) []T {
 
 	var res []T
 	for rows.Next() {
-		// var structData T
-		// mapToStruct(resultToMap(rows), &structData)
 		res = append(res, ScanStruct[T](rows))
 	}
 
@@ -157,18 +153,11 @@ func GetIsLogging() bool {
 func GetDB(readOnly ...bool) *sql.DB {
 	// Use write DB connection if explicitly requested
 	if len(readOnly) > 0 && !readOnly[0] {
-		if wdb == nil {
-			wdb = initDB(false)
-		}
-
-		return wdb
+		return writeDBOnce()
 	}
 
 	// Default to read-only DB connection
-	if db == nil {
-		db = initDB(true)
-	}
-	return db
+	return readDBOnce()
 }
 
 func initDB(readOnly bool) *sql.DB {
@@ -186,11 +175,12 @@ func initDB(readOnly bool) *sql.DB {
 
 		// Use Cloud SQL Connector if configured
 		if cloudSqlInstances := getEnv("DATABASE_READ_INSTANCES"); cloudSqlInstances != "" {
-			if err := registerDial(cloudSqlInstances); err != nil {
+			network := "cloudsqlconn_read"
+			if err := registerDial(cloudSqlInstances, network); err != nil {
 				handleError("cloudsqlconn.NewDialer", err)
 			}
 
-			dbConfig.Net = "cloudsqlconn"
+			dbConfig.Net = network
 			dbConfig.Addr = "localhost:3306"
 		}
 	}
@@ -202,11 +192,12 @@ func initDB(readOnly bool) *sql.DB {
 
 		// Use Cloud SQL Connector if configured
 		if cloudSqlInstances := getEnv("DATABASE_INSTANCES"); cloudSqlInstances != "" {
-			if err := registerDial(cloudSqlInstances); err != nil {
+			network := "cloudsqlconn_write"
+			if err := registerDial(cloudSqlInstances, network); err != nil {
 				handleError("cloudsqlconn.NewDialer", err)
 			}
 
-			dbConfig.Net = "cloudsqlconn"
+			dbConfig.Net = network
 			dbConfig.Addr = "localhost:3306"
 		}
 	}
@@ -228,13 +219,13 @@ func initDB(readOnly bool) *sql.DB {
 	return db
 }
 
-func registerDial(cloudSqlInstances string) error {
+func registerDial(cloudSqlInstances, network string) error {
 	dialer, err := cloudsqlconn.NewDialer(context.Background())
 	if err != nil {
 		return err
 	}
 
-	mysql.RegisterDialContext("cloudsqlconn", func(ctx context.Context, addr string) (net.Conn, error) {
+	mysql.RegisterDialContext(network, func(ctx context.Context, addr string) (net.Conn, error) {
 		return dialer.Dial(ctx, cloudSqlInstances)
 	})
 
@@ -250,18 +241,11 @@ func registerDial(cloudSqlInstances string) error {
 //   - Graceful shutdown in long-lived services
 //   - Manual cleanup between runs (e.g., CLI tools or dev scripts)
 func CloseDB() error {
-	if db != nil {
-		if err := db.Close(); err != nil {
-			return err
-		}
-		db = nil
+	if err := readDBOnce().Close(); err != nil {
+		return err
 	}
-
-	if wdb != nil {
-		if err := wdb.Close(); err != nil {
-			return err
-		}
-		wdb = nil
+	if err := writeDBOnce().Close(); err != nil {
+		return err
 	}
 
 	return nil
@@ -300,90 +284,6 @@ func resultToMap(list *sql.Rows) map[string]any {
 	}
 
 	return row
-}
-
-func mapToStruct(data map[string]any, target any) {
-	rt := reflect.TypeOf(target).Elem()
-	rv := reflect.ValueOf(target).Elem()
-
-	for i := 0; i < rt.NumField(); i++ {
-		fieldName := rt.Field(i).Name
-		fieldType := rt.Field(i).Type
-		createdAtField, _ := rt.FieldByName(fieldName)
-		jsonTag := createdAtField.Tag.Get("json")
-
-		if jsonTag != "" {
-			fieldName = jsonTag
-		} else {
-			fieldName = strings.ToLower(fieldName)
-		}
-
-		if value, ok := data[fieldName]; ok {
-			value = typeConvertor(value, fieldType)
-
-			if fieldType.Kind() == reflect.Ptr && value != nil {
-				switch fieldType.Elem().Kind() {
-				case reflect.Bool:
-					tmp := false
-					rv.Field(i).Set(reflect.ValueOf(&tmp))
-					rv.Field(i).Elem().Set(reflect.ValueOf(value))
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-					tmp := 0
-					rv.Field(i).Set(reflect.ValueOf(&tmp))
-					rv.Field(i).Elem().Set(reflect.ValueOf(value))
-				case reflect.Float32, reflect.Float64:
-					tmp := 0.0
-					rv.Field(i).Set(reflect.ValueOf(&tmp))
-					rv.Field(i).Elem().Set(reflect.ValueOf(value))
-				case reflect.String:
-					tmp := ""
-					rv.Field(i).Set(reflect.ValueOf(&tmp))
-					rv.Field(i).Elem().Set(reflect.ValueOf(value))
-				case reflect.Map:
-					tmp := map[string]any{}
-					rv.Field(i).Set(reflect.ValueOf(&tmp))
-					rv.Field(i).Elem().Set(reflect.ValueOf(value))
-				}
-			} else {
-				rv.Field(i).Set(reflect.ValueOf(value))
-			}
-		}
-	}
-}
-func typeConvertor(value any, targetType reflect.Type) any {
-	if targetType == nil {
-		return value
-	}
-
-	if targetType.Kind() == reflect.Ptr {
-		if value == "" {
-			return nil
-		}
-
-		targetType = targetType.Elem()
-	}
-
-	switch targetType.Kind() {
-	case reflect.Bool:
-		return cast.ToBool(value)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return cast.ToInt(cast.ToString(value))
-	case reflect.Float32, reflect.Float64:
-		return cast.ToFloat64(cast.ToString(value))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return cast.ToUint(value)
-	case reflect.String:
-		return cast.ToString(value)
-	case reflect.Map:
-		return cast.ToStringMap(value)
-	case reflect.Struct:
-		switch targetType {
-		case reflect.TypeOf(time.Time{}):
-			return cast.ToTime(value)
-		}
-	}
-
-	return value
 }
 
 func ScanStruct[T any](row *sql.Rows) (structData T) {
@@ -460,7 +360,7 @@ func ScanStruct[T any](row *sql.Rows) (structData T) {
 // Helper function to check if a type can handle nil values
 func isNullableType(t reflect.Type) bool {
 	switch t.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map:
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map:
 		return true
 	default:
 		// Check for sql.Null types
