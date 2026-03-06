@@ -48,9 +48,57 @@ func All[T any](query string, args []any) []T {
 	handleError("Error On Get Rows", err)
 	defer rows.Close()
 
+	var structData T
+
+	// reflect done once
+	fields, _ := rows.Columns()
+	scans := make([]any, len(fields))
+	for i := range scans {
+		scans[i] = new(any)
+	}
+
+	rt := reflect.TypeOf(structData)
+	rv := reflect.ValueOf(&structData).Elem()
+	notNullFields := make([]fieldMap, 0, rt.NumField())
+
+	for i := range rt.NumField() {
+		field := rt.Field(i)
+		fieldName := field.Name
+
+		if jsonTag := field.Tag.Get("json"); jsonTag != "" {
+			fieldName = jsonTag
+		} else {
+			fieldName = strcase.ToSnake(fieldName)
+		}
+
+		idx := slices.Index(fields, fieldName)
+		if idx < 0 {
+			continue
+		}
+
+		if isNullableType(field.Type) {
+			scans[idx] = rv.Field(i).Addr().Interface()
+		} else {
+			notNullFields = append(notNullFields, fieldMap{i, idx})
+		}
+	}
+
 	var res []T
 	for rows.Next() {
-		res = append(res, ScanStruct[T](rows))
+		if err := rows.Scan(scans...); err != nil {
+			handleError("Error scan fields", err)
+			continue
+		}
+
+		for _, m := range notNullFields {
+			scannedVal := *scans[m.scanIdx].(*any)
+			if scannedVal == nil {
+				continue
+			}
+			setFieldFromInterface(rv.Field(m.structIdx), scannedVal)
+		}
+
+		res = append(res, structData)
 	}
 
 	return res
@@ -373,7 +421,7 @@ func setFieldFromInterface(fv reflect.Value, val any) error {
 	}
 
 	// Handle time.Time specifically
-	if fv.Type() == reflect.TypeOf(time.Time{}) {
+	if fv.Type() == reflect.TypeFor[time.Time]() {
 		if t, ok := val.(time.Time); ok {
 			fv.Set(reflect.ValueOf(t))
 			return nil
